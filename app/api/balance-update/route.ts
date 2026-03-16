@@ -26,7 +26,8 @@ interface DateGroup {
 }
 
 interface ProcessResult {
-  date: string;
+  date: string;  // 调整后的日期（前一天）
+  originalDate?: string;  // 原始日期
   tableA: TableARecord[];
   unmatchedB: TableBRecord[];
 }
@@ -194,6 +195,15 @@ function getCardNumberFromA(row: TableARecord): string {
 }
 
 /**
+ * 获取前一天的日期
+ */
+function getPreviousDate(dateStr: string): string {
+  const date = new Date(dateStr);
+  date.setDate(date.getDate() - 1);
+  return date.toISOString().split('T')[0];
+}
+
+/**
  * 获取表A中的余额值
  */
 function getBalanceFromA(row: TableARecord): number {
@@ -284,13 +294,15 @@ function processSingleDay(
     }
   }
 
-  // 第三步：更新所有记录的"资金划付日期"为当前处理日期
+  // 第三步：更新所有记录的"资金划付日期"为当前处理日期的前一天
+  const prevDate = getPreviousDate(date);
   for (const record of tableA) {
-    setDateInA(record, date);
+    setDateInA(record, prevDate);
   }
 
   return {
-    date,
+    date: prevDate,  // 返回调整后的日期用于文件名
+    originalDate: date,  // 保留原始日期用于日志
     tableA,
     unmatchedB,
   };
