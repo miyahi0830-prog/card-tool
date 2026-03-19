@@ -13,32 +13,22 @@ import {
   Divider,
   Row,
   Col,
-  Table,
   message,
-  Statistic,
-  List,
 } from "antd";
 import {
   InboxOutlined,
-  FileExcelOutlined,
   DeleteOutlined,
   CheckCircleOutlined,
   DownloadOutlined,
-  WarningOutlined,
-  FileTextOutlined,
-  CalendarOutlined,
 } from "@ant-design/icons";
 import type { UploadFile } from "antd/es/upload/interface";
 
 const { Dragger } = Upload;
-const { Title, Text, Paragraph } = Typography;
+const { Title, Paragraph } = Typography;
 
-
-
-export default function BalanceUpdatePage() {
+export default function Page20() {
   const [fileA, setFileA] = useState<UploadFile | null>(null);
   const [fileB, setFileB] = useState<UploadFile | null>(null);
-  const [fileC, setFileC] = useState<UploadFile | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
   const [downloadUrl, setDownloadUrl] = useState<string>("");
@@ -64,13 +54,8 @@ export default function BalanceUpdatePage() {
       const formData = new FormData();
       formData.append("fileA", fileA.originFileObj);
       formData.append("fileB", fileB.originFileObj);
-      
-      // 表C是可选的
-      if (fileC?.originFileObj) {
-        formData.append("fileC", fileC.originFileObj);
-      }
 
-      const response = await fetch("/api/balance-update", {
+      const response = await fetch("/api/20", {
         method: "POST",
         body: formData,
       });
@@ -82,7 +67,7 @@ export default function BalanceUpdatePage() {
 
       // 获取文件名
       const disposition = response.headers.get("Content-Disposition");
-      let filename = "download";
+      let filename = "download.zip";
       if (disposition) {
         const match = disposition.match(/filename="(.+)"/);
         if (match) {
@@ -95,7 +80,7 @@ export default function BalanceUpdatePage() {
       const url = window.URL.createObjectURL(blob);
       setDownloadUrl(url);
       setDownloadFilename(filename);
-      
+
       message.success(`处理完成！请下载 ${filename}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "处理过程中发生错误");
@@ -107,7 +92,6 @@ export default function BalanceUpdatePage() {
   const clearAll = () => {
     setFileA(null);
     setFileB(null);
-    setFileC(null);
     setDownloadUrl("");
     setDownloadFilename("");
     setError("");
@@ -120,13 +104,15 @@ export default function BalanceUpdatePage() {
   };
 
   const beforeUpload = (file: File) => {
-    const isExcel =
+    const isValid =
       file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
       file.type === "application/vnd.ms-excel" ||
+      file.type === "text/csv" ||
       file.name.endsWith(".xlsx") ||
-      file.name.endsWith(".xls");
-    if (!isExcel) {
-      message.error("仅支持 Excel 文件 (.xlsx, .xls)!");
+      file.name.endsWith(".xls") ||
+      file.name.endsWith(".csv");
+    if (!isValid) {
+      message.error("仅支持 Excel (.xlsx, .xls) 或 CSV (.csv) 文件!");
       return Upload.LIST_IGNORE;
     }
     return true;
@@ -147,23 +133,23 @@ export default function BalanceUpdatePage() {
     <div style={{ minHeight: "100vh", background: "#f5f5f5", padding: "48px 24px" }}>
       <Card style={{ maxWidth: 1200, margin: "0 auto" }}>
         <Title level={2} style={{ textAlign: "center", marginBottom: 16 }}>
-          余额更新处理系统
+          调账数据处理系统
         </Title>
-        
+
         <Paragraph style={{ textAlign: "center", color: "#666", marginBottom: 32 }}>
-          单文件多日期处理：从表B和表C中提取日期，按日期倒序遍历处理
+          处理表A（消费数据）和表B（开卡数据），生成调账记录文件
         </Paragraph>
 
         <Row gutter={[32, 32]}>
           {/* 表A上传区域 */}
-          <Col span={24}>
+          <Col span={12}>
             <Card
-              title={<Tag color="blue">表 A (客户余额表)</Tag>}
+              title={<Tag color="blue">表 A (消费数据)</Tag>}
             >
               <Dragger
                 name="fileA"
                 multiple={false}
-                accept=".xlsx,.xls"
+                accept=".xlsx,.xls,.csv"
                 fileList={fileA ? [fileA] : []}
                 customRequest={customRequest}
                 onChange={({ fileList: newFileList }) => {
@@ -179,9 +165,9 @@ export default function BalanceUpdatePage() {
                 </p>
                 <p className="ant-upload-text">点击或拖拽上传表A</p>
                 <p className="ant-upload-hint">
-                  需包含: 卡号、余额 列
+                  需包含: 店铺编号、卡号、交易金额、交易时间
                   <br />
-                  其他字段会被保留
+                  备注将显示为: 预付卡消费
                 </p>
               </Dragger>
             </Card>
@@ -190,12 +176,12 @@ export default function BalanceUpdatePage() {
           {/* 表B上传区域 */}
           <Col span={12}>
             <Card
-              title={<Tag color="green"><CalendarOutlined /> 表 B (交易记录表)</Tag>}
+              title={<Tag color="green">表 B (开卡数据)</Tag>}
             >
               <Dragger
                 name="fileB"
                 multiple={false}
-                accept=".xlsx,.xls"
+                accept=".xlsx,.xls,.csv"
                 fileList={fileB ? [fileB] : []}
                 customRequest={customRequest}
                 onChange={({ fileList: newFileList }) => {
@@ -211,43 +197,9 @@ export default function BalanceUpdatePage() {
                 </p>
                 <p className="ant-upload-text">点击或拖拽上传表B</p>
                 <p className="ant-upload-hint">
-                  单文件包含多日期数据
+                  需包含: 卡号、开卡金额、激活时间
                   <br />
-                  需包含: 卡号、交易金额、资金划付日期 列
-                </p>
-              </Dragger>
-            </Card>
-          </Col>
-
-          {/* 表C上传区域 */}
-          <Col span={12}>
-            <Card
-              title={<Tag color="orange"><CalendarOutlined /> 表 C (删除记录表 - 可选)</Tag>}
-            >
-              <Dragger
-                name="fileC"
-                multiple={false}
-                accept=".xlsx,.xls"
-                fileList={fileC ? [fileC] : []}
-                customRequest={customRequest}
-                onChange={({ fileList: newFileList }) => {
-                  setFileC(newFileList[0] || null);
-                  setError("");
-                }}
-                beforeUpload={beforeUpload}
-                onRemove={() => setFileC(null)}
-                style={{ padding: 24 }}
-              >
-                <p className="ant-upload-drag-icon">
-                  <InboxOutlined style={{ fontSize: 48, color: "#fa8c16" }} />
-                </p>
-                <p className="ant-upload-text">点击或拖拽上传表C</p>
-                <p className="ant-upload-hint">
-                  单文件包含多日期数据（可选）
-                  <br />
-                  需包含: 卡号、日期 列
-                  <br />
-                  匹配的记录将从表A中删除
+                  备注将显示为: 预付卡充值
                 </p>
               </Dragger>
             </Card>
@@ -255,7 +207,7 @@ export default function BalanceUpdatePage() {
         </Row>
 
         {/* 操作按钮 */}
-        {(fileA || fileB || fileC) && (
+        {(fileA || fileB) && (
           <>
             <Divider />
             <Space style={{ width: "100%", justifyContent: "center" }}>

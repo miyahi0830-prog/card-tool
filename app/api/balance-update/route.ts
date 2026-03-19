@@ -13,9 +13,14 @@ interface TableBRecord {
   [key: string]: unknown;
 }
 
+// 表C记录状态类型
+type TableCStatus = "新增" | "充值";
+
 interface TableCRecord {
   cardNumber: string;
   date: string;
+  status: TableCStatus;  // 状态：新增 或 充值
+  amount?: number;       // 充值金额（当状态为"充值"时使用）
   [key: string]: unknown;
 }
 
@@ -30,6 +35,64 @@ interface ProcessResult {
   originalDate?: string;  // 原始日期
   tableA: TableARecord[];
   unmatchedB: TableBRecord[];
+}
+
+/**
+ * 解析CSV文件
+ */
+function parseCSV(buffer: Buffer): any[] {
+  const content = buffer.toString('utf-8');
+  const lines = content.split('\n').filter(line => line.trim() !== '');
+  
+  if (lines.length === 0) return [];
+  
+  // 检测分隔符（逗号或制表符）
+  const firstLine = lines[0];
+  const delimiter = firstLine.includes('\t') ? '\t' : ',';
+  
+  // 解析CSV行（处理引号包裹的字段）
+  const parseLine = (line: string): string[] => {
+    const result: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      
+      if (char === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          // 转义的引号
+          current += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (char === delimiter && !inQuotes) {
+        result.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    result.push(current.trim());
+    return result;
+  };
+  
+  const headers = parseLine(lines[0]);
+  const rows = lines.slice(1);
+  
+  console.log(`CSV解析: 分隔符="${delimiter}", 表头=${headers.length}列, 行数=${rows.length}`);
+  
+  return rows.map((row) => {
+    const values = parseLine(row);
+    const obj: any = {};
+    headers.forEach((header, index) => {
+      if (header) {
+        obj[String(header)] = values[index] ?? "";
+      }
+    });
+    return obj;
+  });
 }
 
 /**
@@ -67,6 +130,20 @@ function parseExcel(buffer: Buffer): any[] {
     });
     return obj;
   });
+}
+
+/**
+ * 根据文件名解析文件（支持Excel和CSV）
+ */
+function parseFile(buffer: Buffer, filename: string): any[] {
+  const lowerFilename = filename.toLowerCase();
+  if (lowerFilename.endsWith('.csv')) {
+    console.log(`解析CSV文件: ${filename}`);
+    return parseCSV(buffer);
+  } else {
+    console.log(`解析Excel文件: ${filename}`);
+    return parseExcel(buffer);
+  }
 }
 
 /**
@@ -172,10 +249,21 @@ function groupDataByDate(
     }
 
     const group = dateMap.get(date)!;
+    
+    // 解析状态字段
+    const statusValue = getValue(rowData, ["状态", "status"]);
+    const status: TableCStatus = statusValue === "充值" ? "充值" : "新增";
+    
+    // 解析金额字段（充值时使用）
+    const amountValue = getValue(rowData, ["金额", "amount", "充值金额"]);
+    const amount = status === "充值" ? Number(amountValue ?? 0) : undefined;
+    
     const record: TableCRecord = {
       ...rowData,
       cardNumber: String(getValue(rowData, ["卡号", "cardNumber"]) ?? ""),
       date,
+      status,
+      amount,
     };
 
     group.tableC.push(record);
@@ -195,12 +283,15 @@ function getCardNumberFromA(row: TableARecord): string {
 }
 
 /**
- * 获取前一天的日期
+ * 获取前一天的日期，格式化为YYYYMMDD
  */
 function getPreviousDate(dateStr: string): string {
   const date = new Date(dateStr);
   date.setDate(date.getDate() - 1);
-  return date.toISOString().split('T')[0];
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}${month}${day}`;
 }
 
 /**
@@ -224,7 +315,7 @@ function setBalanceInA(row: TableARecord, newBalance: number): void {
 }
 
 /**
- * 设置表A中的资金划付日期值
+ * 设置表A中的资金划付日期值（格式：YYYYMMDD）
  */
 function setDateInA(row: TableARecord, date: string): void {
   const keys = Object.keys(row);
@@ -232,7 +323,9 @@ function setDateInA(row: TableARecord, date: string): void {
     ["资金划付日期"].some(pk => k === pk)
   );
   if (dateKey) {
-    row[dateKey] = date;
+    // 如果date是YYYY-MM-DD格式，转换为YYYYMMDD
+    const formattedDate = date.replace(/-/g, '');
+    row[dateKey] = formattedDate;
   }
 }
 
@@ -278,19 +371,48 @@ function processSingleDay(
     }
   }
 
-  // 第二步：遍历表C，删除匹配的记录
+  // 第二步：遍历表C，根据状态执行不同操作
   if (tableC.length > 0) {
-    const cardNumbersToDelete = new Set(tableC.map(c => c.cardNumber));
-    console.log(`  需要删除的卡号数: ${cardNumbersToDelete.size}`);
+    const cardNumbersToDelete = new Set<string>();
+    const rechargeRecords: TableCRecord[] = [];
     
-    // 过滤掉需要删除的记录
-    const remainingRecords = tableA.filter(record => !cardNumbersToDelete.has(getCardNumberFromA(record)));
-    console.log(`  删除前记录数: ${tableA.length}, 删除后: ${remainingRecords.length}`);
+    // 分类处理：新增的记录需要删除，充值的记录需要扣减余额
+    for (const cRecord of tableC) {
+      if (cRecord.status === "充值") {
+        rechargeRecords.push(cRecord);
+      } else {
+        cardNumbersToDelete.add(cRecord.cardNumber);
+      }
+    }
     
-    // 更新tableA - 使用循环避免栈溢出
-    tableA.length = 0;
-    for (const record of remainingRecords) {
-      tableA.push(record);
+    console.log(`  表C处理: 新增记录数=${cardNumbersToDelete.size}, 充值记录数=${rechargeRecords.length}`);
+    
+    // 处理充值记录：从表A对应卡号的余额中减去充值金额
+    for (const rechargeRecord of rechargeRecords) {
+      const index = tableAIndex.get(rechargeRecord.cardNumber);
+      if (index !== undefined && rechargeRecord.amount !== undefined) {
+        const currentBalance = getBalanceFromA(tableA[index]);
+        const newBalance = currentBalance - rechargeRecord.amount;
+        setBalanceInA(tableA[index], newBalance);
+        console.log(`  充值处理: 卡号=${rechargeRecord.cardNumber}, 扣除金额=${rechargeRecord.amount}, 新余额=${newBalance}`);
+      } else {
+        console.log(`  充值记录未匹配: 卡号=${rechargeRecord.cardNumber}`);
+      }
+    }
+    
+    // 处理新增记录：删除匹配的记录
+    if (cardNumbersToDelete.size > 0) {
+      console.log(`  需要删除的卡号数: ${cardNumbersToDelete.size}`);
+      
+      // 过滤掉需要删除的记录
+      const remainingRecords = tableA.filter(record => !cardNumbersToDelete.has(getCardNumberFromA(record)));
+      console.log(`  删除前记录数: ${tableA.length}, 删除后: ${remainingRecords.length}`);
+      
+      // 更新tableA - 使用循环避免栈溢出
+      tableA.length = 0;
+      for (const record of remainingRecords) {
+        tableA.push(record);
+      }
     }
   }
 
@@ -427,7 +549,7 @@ export async function POST(request: NextRequest) {
     let tableAData: unknown[];
     try {
       const bufferA = Buffer.from(await fileA.arrayBuffer());
-      tableAData = parseExcel(bufferA);
+      tableAData = parseFile(bufferA, fileA.name);
       console.log(`表A解析完成，共 ${tableAData.length} 条记录`);
     } catch (error) {
       console.error("表A解析错误:", error);
@@ -448,7 +570,7 @@ export async function POST(request: NextRequest) {
     let tableBData: unknown[];
     try {
       const bufferB = Buffer.from(await fileB.arrayBuffer());
-      tableBData = parseExcel(bufferB);
+      tableBData = parseFile(bufferB, fileB.name);
       console.log(`表B解析完成，共 ${tableBData.length} 条记录`);
     } catch (error) {
       console.error("表B解析错误:", error);
@@ -463,7 +585,7 @@ export async function POST(request: NextRequest) {
     if (fileC) {
       try {
         const bufferC = Buffer.from(await fileC.arrayBuffer());
-        tableCData = parseExcel(bufferC);
+        tableCData = parseFile(bufferC, fileC.name);
         console.log(`表C解析完成，共 ${tableCData.length} 条记录`);
       } catch (error) {
         console.error("表C解析错误:", error);
